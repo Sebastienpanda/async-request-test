@@ -10,102 +10,118 @@ faire un programme en GO qui :
 
 il est interdit d'utiliser un crate ou une librairie extérieure
 
-# Reponse Poe
+# Reponse Github Copilot
 
-Voici un programme en Go qui répond à vos exigences :
+Votre code actuel semble déjà accomplir la plupart des tâches que vous avez décrites. Cependant, il semble y avoir une erreur dans la façon dont vous renvoyez la réponse à la requête initiale. Vous devriez utiliser un canal de réponse différent pour éviter les conflits avec les requêtes de progression. Voici comment vous pourriez modifier votre code pour accomplir cela :
 
 ```go
 package main
 
 import (
-	"fmt"
-	"math/rand"
-	"time"
+    "fmt"
+    "math/rand"
+    "time"
 )
 
 type Request struct {
-	ID        int
-	Progress  int
-	Completed bool
+    ID        int
+    Progress  int
+    Completed bool
 }
 
 func main() {
-	// Démarre le thread qui attend les requêtes
-	requestChan := make(chan Request)
-	go requestHandler(requestChan)
+    requestChan := make(chan Request)
+    responseChan := make(chan Request)
+    progressRequestChan := make(chan int)
+    progressResponseChan := make(chan Request)
+    doneChan := make(chan bool)
 
-	// Attend 2 secondes que le thread soit bien démarré
-	time.Sleep(2 * time.Second)
+    go requestHandler(requestChan, responseChan, progressRequestChan, progressResponseChan, doneChan)
 
-	// Envoie une requête au thread et attend la réponse
-	request := Request{}
-	requestChan <- request
-	response := <-requestChan
+    // Envoie une requête au thread et récupère l'ID
+    request := Request{}
+    requestChan <- request
+    response := <-responseChan
+    fmt.Printf("Requête envoyée, ID : %d\n", response.ID)
 
-	// Demande la progression de la requête toutes les secondes jusqu'à ce qu'elle soit terminée
-	for !response.Completed {
-		fmt.Printf("Progression de la requête %d : %d%%\n", response.ID, response.Progress)
-		time.Sleep(1 * time.Second)
-		response = <-requestChan
-	}
+    // Demande la progression de la requête toutes les secondes jusqu'à ce qu'elle soit terminée
+    go func() {
+        for !response.Completed {
+            time.Sleep(1 * time.Second)
+            progressRequestChan <- response.ID
+            response = <-progressResponseChan
+            fmt.Printf("Progression de la requête %d : %d%%\n", response.ID, response.Progress)
+        }
+        doneChan <- true
+    }()
 
-	fmt.Println("Merci au thread scheduler !")
+    <-doneChan
+    fmt.Println("Merci au thread scheduler !")
 }
 
-func requestHandler(requestChan chan Request) {
-	var requestID int = 1
+func requestHandler(requestChan chan Request, responseChan chan Request, progressRequestChan chan int, progressResponseChan chan Request, doneChan chan bool) {
+    var requestID int = 1
+    tasks := make(map[int]*Request)
 
-	for {
-		// Attend une requête du thread principal
-		request := <-requestChan
+    for {
+        select {
+        case request := <-requestChan:
+            request.ID = requestID
+            requestID++
 
-		// Crée un ID pour la requête
-		request.ID = requestID
-		requestID++
+            progressChan := make(chan int)
+            go processRequest(request.ID, progressChan)
 
-		// Crée un canal pour communiquer avec le thread de traitement
-		progressChan := make(chan int)
+            tasks[request.ID] = &request
+            responseChan <- request
 
-		// Démarre le thread de traitement
-		go processRequest(request.ID, progressChan)
+            go func(id int, progressChan chan int) {
+                for progress := range progressChan {
+                    tasks[id].Progress = progress
+                    if progress == 100 {
+                        tasks[id].Completed = true
+                    }
+                    progressResponseChan <- *tasks[id]
+                }
+            }(request.ID, progressChan)
 
-		// Envoie les mises à jour de progression au thread principal
-		for progress := range progressChan {
-			request.Progress = progress
-			if progress == 100 {
-				request.Completed = true
-				break
-			}
-			requestChan <- request
-		}
+        case id := <-progressRequestChan:
+            if task, exists := tasks[id]; exists {
+                progressResponseChan <- *task
+            }
 
-		// Renvoie la requête terminée au thread principal
-		requestChan <- request
-	}
+        case <-doneChan:
+            return
+        }
+    }
 }
 
 func processRequest(id int, progressChan chan int) {
-	// Simule une opération longue et aléatoire
-	progress := 0
-	for progress < 100 {
-		progress += rand.Intn(5) + 1
-		progressChan <- progress
-		time.Sleep(time.Duration(rand.Intn(500)+500) * time.Millisecond)
-	}
-	progressChan <- 100
+    defer close(progressChan)
+    progress := 0
+    for progress < 100 {
+        progress += rand.Intn(5) + 1
+        progressChan <- progress
+        time.Sleep(time.Duration(rand.Intn(500)+500) * time.Millisecond)
+    }
+    progressChan <- 100
 }
 ```
 
-Explication du programme :
+Dans ce code, j'ai ajouté un canal responseChan pour renvoyer la réponse à la requête initiale. Cela permet d'éviter les conflits avec les requêtes de progression qui sont envoyées sur le canal requestChan.
 
-Le programme démarre un thread requestHandler qui attend les requêtes du thread principal.
-Après 2 secondes, le thread principal envoie une requête au requestHandler via un canal requestChan.
-Le requestHandler crée un ID unique pour la requête, crée un canal progressChan pour communiquer avec le thread de traitement, et démarre le thread de traitement processRequest.
-Le processRequest simule une opération longue et aléatoire en mettant à jour la progression de 0 à 100 dans le canal progressChan.
-Le requestHandler envoie les mises à jour de progression au thread principal via le canal requestChan.
-Une fois que la progression atteint 100%, le thread principal affiche "Merci au thread scheduler !"
-La communication entre les threads se fait via des canaux Go. Le requestHandler joue le rôle de "scheduler" en recevant les requêtes du thread principal, en les distribuant aux threads de traitement, et en renvoyant les résultats au thread principal.
+### Erreur fatal error: all goroutines are asleep - deadlock!
 
-```sh
-go run main.go
+# Reponse github copilot
+
+L'erreur de deadlock se produit lorsque toutes les goroutines sont bloquées ou en attente d'une ressource qui ne peut être libérée. Dans votre cas, cela se produit probablement parce que vous essayez d'envoyer une valeur à progressResponseChan mais il n'y a pas de goroutine en attente pour recevoir cette valeur.
+
+Pour résoudre ce problème, vous pouvez utiliser une déclaration select avec une clause default pour rendre l'opération d'envoi non bloquante. Si le canal est plein ou s'il n'y a pas de récepteur, le default sera exécuté et aucune valeur ne sera envoyée. Voici comment vous pouvez modifier votre code à la ligne 67 :
+
+```go
+select {
+case progressResponseChan <- *tasks[id]:
+default:
+    fmt.Println("Aucun récepteur pour progressResponseChan")
+}
 ```

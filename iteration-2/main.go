@@ -13,62 +13,78 @@ type Request struct {
 }
 
 func main() {
-	// Démarre le thread qui attend les requêtes
 	requestChan := make(chan Request)
-	go requestHandler(requestChan)
+	responseChan := make(chan Request)
+	progressRequestChan := make(chan int)
+	progressResponseChan := make(chan Request)
+	doneChan := make(chan bool)
 
-	// Attend 2 secondes que le thread soit bien démarré
-	time.Sleep(2 * time.Second)
+	go requestHandler(requestChan, responseChan, progressRequestChan, progressResponseChan, doneChan)
 
-	// Envoie une requête au thread et attend la réponse
+	// Envoie une requête au thread et récupère l'ID
 	request := Request{}
 	requestChan <- request
-	response := <-requestChan
+	response := <-responseChan
+	fmt.Printf("Requête envoyée, ID : %d\n", response.ID)
 
 	// Demande la progression de la requête toutes les secondes jusqu'à ce qu'elle soit terminée
-	for !response.Completed {
-		fmt.Printf("Progression de la requête %d : %d%%\n", response.ID, response.Progress)
-		time.Sleep(1 * time.Second)
-		response = <-requestChan
-	}
+	go func() {
+		for !response.Completed {
+			time.Sleep(1 * time.Second)
+			progressRequestChan <- response.ID
+			response = <-progressResponseChan
+			fmt.Printf("Progression de la requête %d : %d%%\n", response.ID, response.Progress)
+		}
+		doneChan <- true
+	}()
 
+	<-doneChan
 	fmt.Println("Merci au thread scheduler !")
 }
 
-func requestHandler(requestChan chan Request) {
+func requestHandler(requestChan chan Request, responseChan chan Request, progressRequestChan chan int, progressResponseChan chan Request, doneChan chan bool) {
 	var requestID int = 1
+	tasks := make(map[int]*Request)
 
 	for {
-		// Attend une requête du thread principal
-		request := <-requestChan
+		select {
+		case request := <-requestChan:
+			request.ID = requestID
+			requestID++
 
-		// Crée un ID pour la requête
-		request.ID = requestID
-		requestID++
+			progressChan := make(chan int)
+			go processRequest(request.ID, progressChan)
 
-		// Crée un canal pour communiquer avec le thread de traitement
-		progressChan := make(chan int)
+			tasks[request.ID] = &request
+			responseChan <- request
 
-		// Démarre le thread de traitement
-		go processRequest(request.ID, progressChan)
+			go func(id int, progressChan chan int) {
+				for progress := range progressChan {
+					tasks[id].Progress = progress
+					if progress == 100 {
+						tasks[id].Completed = true
+					}
+					select {
+					case progressResponseChan <- *tasks[id]:
+					default:
+						fmt.Println("Aucun récepteur pour progressResponseChan")
+					}
+				}
+			}(request.ID, progressChan)
 
-		// Envoie les mises à jour de progression au thread principal
-		for progress := range progressChan {
-			request.Progress = progress
-			if progress == 100 {
-				request.Completed = true
-				break
+		case id := <-progressRequestChan:
+			if task, exists := tasks[id]; exists {
+				progressResponseChan <- *task
 			}
-			requestChan <- request
-		}
 
-		// Renvoie la requête terminée au thread principal
-		requestChan <- request
+		case <-doneChan:
+			return
+		}
 	}
 }
 
 func processRequest(id int, progressChan chan int) {
-	// Simule une opération longue et aléatoire
+	defer close(progressChan)
 	progress := 0
 	for progress < 100 {
 		progress += rand.Intn(5) + 1
