@@ -3,93 +3,73 @@ package main
 import (
 	"fmt"
 	"math/rand"
+	"sync"
 	"time"
 )
 
-type Request struct {
-	ID        int
-	Progress  int
-	Completed bool
+// Structure représentant une tâche avec un ID et une progression.
+type Task struct {
+	ID       int
+	Progress int
+}
+
+// Fonction de l'opération longue et aléatoire.
+func longOperation(task *Task, progressChan chan<- int, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for task.Progress < 100 {
+		time.Sleep(time.Duration(rand.Intn(500)) * time.Millisecond) // Simulation de temps de traitement aléatoire
+		task.Progress += rand.Intn(20)
+		if task.Progress > 100 {
+			task.Progress = 100
+		}
+		progressChan <- task.Progress
+	}
+}
+
+// Fonction du thread scheduler.
+func scheduler(requestChan <-chan struct{}, idChan chan<- int, progressChan chan<- int, wg *sync.WaitGroup) {
+	defer wg.Done()
+	taskID := 0
+	for range requestChan {
+		taskID++
+		task := &Task{ID: taskID, Progress: 0}
+		idChan <- task.ID
+		go longOperation(task, progressChan, wg)
+	}
 }
 
 func main() {
-	requestChan := make(chan Request)
-	responseChan := make(chan Request)
-	progressRequestChan := make(chan int)
-	progressResponseChan := make(chan Request)
-	doneChan := make(chan bool)
+	requestChan := make(chan struct{})
+	idChan := make(chan int)
+	progressChan := make(chan int)
+	var wg sync.WaitGroup
 
-	go requestHandler(requestChan, responseChan, progressRequestChan, progressResponseChan, doneChan)
+	// Démarrage du scheduler
+	wg.Add(1)
+	go scheduler(requestChan, idChan, progressChan, &wg)
 
-	// Envoie une requête au thread et récupère l'ID
-	request := Request{}
-	requestChan <- request
-	response := <-responseChan
-	fmt.Printf("Requête envoyée, ID : %d\n", response.ID)
+	// Attendre 2 secondes pour que le scheduler soit bien démarré
+	time.Sleep(2 * time.Second)
 
-	// Demande la progression de la requête toutes les secondes jusqu'à ce qu'elle soit terminée
-	go func() {
-		for !response.Completed {
-			time.Sleep(1 * time.Second)
-			progressRequestChan <- response.ID
-			response = <-progressResponseChan
-			fmt.Printf("Progression de la requête %d : %d%%\n", response.ID, response.Progress)
-		}
-		doneChan <- true
-	}()
+	// Envoi de la demande au scheduler
+	requestChan <- struct{}{}
 
-	<-doneChan
-	fmt.Println("Merci au thread scheduler !")
-}
+	// Récupération de l'ID de la tâche
+	taskID := <-idChan
+	fmt.Printf("ID de la tâche reçue: %d\n", taskID)
 
-func requestHandler(requestChan chan Request, responseChan chan Request, progressRequestChan chan int, progressResponseChan chan Request, doneChan chan bool) {
-	var requestID int = 1
-	tasks := make(map[int]*Request)
-
-	for {
-		select {
-		case request := <-requestChan:
-			request.ID = requestID
-			requestID++
-
-			progressChan := make(chan int)
-			go processRequest(request.ID, progressChan)
-
-			tasks[request.ID] = &request
-			responseChan <- request
-
-			go func(id int, progressChan chan int) {
-				for progress := range progressChan {
-					tasks[id].Progress = progress
-					if progress == 100 {
-						tasks[id].Completed = true
-					}
-					select {
-					case progressResponseChan <- *tasks[id]:
-					default:
-						fmt.Println("Aucun récepteur pour progressResponseChan")
-					}
-				}
-			}(request.ID, progressChan)
-
-		case id := <-progressRequestChan:
-			if task, exists := tasks[id]; exists {
-				progressResponseChan <- *task
-			}
-
-		case <-doneChan:
-			return
-		}
-	}
-}
-
-func processRequest(id int, progressChan chan int) {
-	defer close(progressChan)
+	// Suivi de la progression de la tâche toutes les secondes
 	progress := 0
 	for progress < 100 {
-		progress += rand.Intn(5) + 1
-		progressChan <- progress
-		time.Sleep(time.Duration(rand.Intn(500)+500) * time.Millisecond)
+		time.Sleep(1 * time.Second)
+		progress = <-progressChan
+		fmt.Printf("Progression de la tâche %d: %d%%\n", taskID, progress)
 	}
-	progressChan <- 100
+
+	// Dire merci une fois la tâche terminée
+	fmt.Println("Merci au scheduler")
+
+	// Fermeture des canaux et attente de la fin des goroutines
+	close(requestChan)
+	wg.Wait()
 }
